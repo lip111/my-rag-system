@@ -3,3 +3,5 @@ langchain==0.1.0
 chromadb==0.4.15
 sentence-transformers
 pypdf2
+chardet==5.2.0
+pdfplumber==0.10.3
