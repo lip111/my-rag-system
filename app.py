@@ -5,6 +5,8 @@ import os
 import time
 from src.document_parser import DocumentParser
 from src.text_splitter import TextSplitter
+from src.embedder import TextEmbedder
+import numpy as np
 
 # 初始化session state
 if "uploaded_file" not in st.session_state:
@@ -17,6 +19,10 @@ if "show_chunks" not in st.session_state:
     st.session_state.show_chunks = False
 if "chunk_analysis" not in st.session_state:
     st.session_state.chunk_analysis = None
+if "vectors" not in st.session_state:
+    st.session_state.vectors = None
+if "vector_info" not in st.session_state:
+    st.session_state.vector_info = None
  
 # 设置页面配置
 st.set_page_config(
@@ -63,6 +69,24 @@ with st.sidebar:
     
     if chunk_overlap >= chunk_size:
         st.warning("⚠️ 重叠大小应小于块大小")
+
+
+    st.subheader("🧠 向量化设置")
+    
+    embedding_model = st.selectbox(
+        "嵌入模型:",
+        ["all-MiniLM-L6-v2", "paraphrase-multilingual-MiniLM-L12-v2"],
+        index=0,
+        help="all-MiniLM-L6-v2: 英文优化，速度快\nparaphrase-multilingual: 多语言支持，包括中文"
+    )
+    
+    batch_size = st.slider("批处理大小", 8, 64, 16, 8,
+                          help="一次处理多少个文本块，越大越快但需要更多内存")
+    
+    if st.checkbox("显示高级设置", value=False):
+        device = st.radio("运行设备", ["cpu", "cuda"], index=0,
+                         help="cuda需要GPU支持")
+
 
     # 显示选项
     show_raw = st.checkbox("显示原始内容", value=True)
@@ -514,8 +538,110 @@ with tab1:
                                         
                                         # 清理
                                         os.unlink(tmp_path)
+                        
+                        # 添加向量化部分
+                        st.divider()
+                        st.subheader("🧠 向量化处理")
 
-                    
+                        if st.button("🚀 开始向量化", type="primary", use_container_width=True, key="embed_button"):
+                            with st.spinner("正在初始化嵌入模型..."):
+                                try:
+                                    # 创建嵌入器
+                                    embedder = TextEmbedder(model_name=embedding_model)
+                                    
+                                    # 显示进度
+                                    progress_bar = st.progress(0)
+                                    status_text = st.empty()
+                                    
+                                    # 1. 加载模型
+                                    status_text.text("正在加载模型...")
+                                    if embedder.load_model() is None:
+                                        st.error("❌ 模型加载失败")
+                                    else:
+                                        progress_bar.progress(20)
+                                        
+                                        # 2. 准备文本
+                                        texts = [chunk.text for chunk in chunks]
+                                        total_chunks = len(texts)
+                                        
+                                        # 3. 分批处理
+                                        status_text.text(f"开始向量化 {total_chunks} 个文本块...")
+                                        all_vectors = []
+                                        
+                                        for batch_num, i in enumerate(range(0, total_chunks, batch_size)):
+                                            batch_texts = texts[i:i+batch_size]
+                                            batch_num += 1
+                                            total_batches = (total_chunks + batch_size - 1) // batch_size
+                                            
+                                            status_text.text(f"处理批次 {batch_num}/{total_batches} ({len(batch_texts)} 个块)")
+                                            
+                                            # 向量化这一批
+                                            batch_vectors = embedder.embed_batch(batch_texts)
+                                            all_vectors.extend(batch_vectors)
+                                            
+                                            # 更新进度
+                                            processed = min(i + batch_size, total_chunks)
+                                            progress = processed / total_chunks
+                                            progress_value = 0.2 + 0.7 * progress  # 20%到90%之间
+                                            progress_bar.progress(progress_value)  # 使用0-1的值
+                                            status_text.text(f"已处理 {processed}/{total_chunks} 个块")
+                                        
+                                        # 4. 保存结果
+                                        progress_bar.progress(95)
+                                        status_text.text("保存结果...")
+                                        
+                                        st.session_state.vectors = all_vectors
+                                        st.session_state.vector_info = {
+                                            "model": embedding_model,
+                                            "dimension": len(all_vectors[0]) if all_vectors else 0,
+                                            "total_vectors": len(all_vectors),
+                                            "batch_size": batch_size
+                                        }
+                                        
+                                        progress_bar.progress(100)
+                                        status_text.text("✅ 向量化完成！")
+                                        
+                                        st.success(f"✅ 成功向量化 {len(all_vectors)} 个文本块")
+                                        
+                                        # 显示统计
+                                        col1, col2, col3 = st.columns(3)
+                                        with col1:
+                                            st.metric("向量维度", st.session_state.vector_info["dimension"])
+                                        with col2:
+                                            st.metric("总向量数", st.session_state.vector_info["total_vectors"])
+                                        with col3:
+                                            st.metric("批处理大小", batch_size)
+                                        
+                                        # 显示示例向量
+                                        with st.expander("查看示例向量", expanded=False):
+                                            if all_vectors:
+                                                sample = all_vectors[0]
+                                                st.code(f"前10个值: {sample[:10]}", language="python")
+                                                st.caption(f"向量长度: {len(sample)}")
+                                        
+                                        st.info("📦 向量已准备就绪，可以进行下一步：存储到向量数据库。")
+                                    
+                                except Exception as e:
+                                    st.error(f"❌ 向量化过程中发生错误: {str(e)}")
+                                    import traceback
+                                    with st.expander("查看错误详情"):
+                                        st.code(traceback.format_exc())
+                                finally:
+                                    time.sleep(1)
+                                    progress_bar.empty()
+                                    status_text.empty()
+                        
+                        if st.button("🔄 清除向量", type="secondary", use_container_width=False, key="clear_vectors"):
+                            if "vectors" in st.session_state:
+                                del st.session_state.vectors
+                            if "vector_info" in st.session_state:
+                                del st.session_state.vector_info
+                            st.success("✅ 已清除向量数据")
+                        
+                        # 显示已有的向量化结果
+                        if "vectors" in st.session_state and st.session_state.vectors:
+                            info = st.session_state.vector_info
+                            st.info(f"📊 已有 {info['total_vectors']} 个向量化结果（维度: {info['dimension']}）")                        
 
 with tab2:
     st.subheader("批量文件处理")

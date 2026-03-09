@@ -40,7 +40,7 @@ class TextEmbedder:
                     self.model_name,
                     cache_folder="./models"  # 保存到项目目录
                 )
-            
+
             # 测试模型
             test_vector = self.model.encode("test")
             print(f"✅ 模型加载成功，维度: {len(test_vector)}")
