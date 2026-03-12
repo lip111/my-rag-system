@@ -1,4 +1,7 @@
 # app.py
+import sys
+__import__('pysqlite3')
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 import streamlit as st
 import tempfile
 import os
@@ -7,6 +10,7 @@ from src.document_parser import DocumentParser
 from src.text_splitter import TextSplitter
 from src.embedder import TextEmbedder
 import numpy as np
+from src.vector_store import VectorStore
 
 # 初始化session state
 if "uploaded_file" not in st.session_state:
@@ -86,6 +90,48 @@ with st.sidebar:
     if st.checkbox("显示高级设置", value=False):
         device = st.radio("运行设备", ["cpu", "cuda"], index=0,
                          help="cuda需要GPU支持")
+
+
+    st.subheader("🗃️ 向量数据库设置")
+    
+    collection_name = st.text_input(
+        "集合名称",
+        value="documents",
+        help="向量数据库的集合名称"
+    )
+    
+    persist_dir = st.text_input(
+        "存储路径",
+        value="./chroma_db",
+        help="向量数据库文件存储路径"
+    )
+    
+    # 搜索设置
+    n_results = st.slider(
+        "搜索结果数量",
+        min_value=1,
+        max_value=20,
+        value=5,
+        help="每次搜索返回的结果数量"
+    )
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🗑️ 清空向量数据库", type="secondary"):
+            vector_store = VectorStore(collection_name, persist_dir)
+            if vector_store.delete_collection():
+                st.success("✅ 向量数据库已清空")
+            else:
+                st.error("❌ 清空失败")
+    
+    with col2:
+        if st.button("🔄 重置向量数据库", type="secondary"):
+            vector_store = VectorStore(collection_name, persist_dir)
+            if vector_store.reset():
+                st.success("✅ 向量数据库已重置")
+            else:
+                st.error("❌ 重置失败")
+
 
 
     # 显示选项
@@ -641,7 +687,142 @@ with tab1:
                         # 显示已有的向量化结果
                         if "vectors" in st.session_state and st.session_state.vectors:
                             info = st.session_state.vector_info
-                            st.info(f"📊 已有 {info['total_vectors']} 个向量化结果（维度: {info['dimension']}）")                        
+                            st.info(f"📊 已有 {info['total_vectors']} 个向量化结果（维度: {info['dimension']}）")  
+                        
+                            # 在向量化部分之后添加向量数据库存储
+                            vectors = st.session_state.vectors
+                            chunks = st.session_state.chunks
+                            
+                            st.divider()
+                            st.subheader("🗃️ 向量数据库存储")
+                            
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                if st.button("💾 存储到向量数据库", type="primary", use_container_width=True, key="store_vectors"):
+                                    with st.spinner("正在存储到向量数据库..."):
+                                        try:
+                                            # 创建向量数据库
+                                            vector_store = VectorStore(collection_name, persist_dir)
+                                            
+                                            # 转换向量为列表格式
+                                            vectors_list = [v.tolist() if hasattr(v, 'tolist') else v for v in vectors]
+                                            
+                                            # 添加到向量数据库
+                                            result = vector_store.add_chunks(chunks, vectors_list)
+                                            
+                                            if result["success"]:
+                                                st.success(f"✅ 成功存储 {result['count']} 个向量")
+                                                
+                                                # 获取集合信息
+                                                info = vector_store.get_collection_info()
+                                                st.info(f"📊 向量数据库现有 {info['count']} 个向量")
+                                                
+                                                # 保存向量数据库实例到session_state
+                                                st.session_state.vector_store = vector_store
+                                                st.session_state.collection_info = info
+                                            else:
+                                                st.error(f"❌ 存储失败: {result.get('error', '未知错误')}")
+                                                
+                                        except Exception as e:
+                                            st.error(f"❌ 存储过程中发生错误: {str(e)}")
+                                            import traceback
+                                            with st.expander("查看错误详情"):
+                                                st.code(traceback.format_exc())
+                            
+                            with col2:
+                                if st.button("📊 查看数据库状态", type="secondary", use_container_width=True, key="view_db"):
+                                    try:
+                                        vector_store = VectorStore(collection_name, persist_dir)
+                                        info = vector_store.get_collection_info()
+                                        
+                                        st.success(f"✅ 向量数据库状态")
+                                        st.json(info)
+                                        
+                                        st.session_state.vector_store = vector_store
+                                        st.session_state.collection_info = info
+                                        
+                                    except Exception as e:
+                                        st.error(f"❌ 获取状态失败: {e}") 
+
+                            # 在向量数据库存储后添加搜索功能
+                            if "vector_store" in st.session_state and st.session_state.vector_store:
+                                vector_store = st.session_state.vector_store
+                                
+                                st.divider()
+                                st.subheader("🔍 向量搜索测试")
+                                
+                                # 搜索输入
+                                search_query = st.text_input(
+                                    "输入搜索内容",
+                                    placeholder="输入您要搜索的问题...",
+                                    key="search_input"
+                                )
+                                
+                                col1, col2 = st.columns([3, 1])
+                                with col1:
+                                    search_clicked = st.button("🔍 开始搜索", type="primary", use_container_width=True, key="search_button")
+                                
+                                with col2:
+                                    if st.button("📋 显示示例", type="secondary", use_container_width=True, key="example_button"):
+                                        examples = [
+                                            "什么是机器学习？",
+                                            "深度学习有什么应用？",
+                                            "Python编程语言的特点",
+                                            "向量数据库的作用"
+                                        ]
+                                        import random
+                                        st.session_state.example_query = random.choice(examples)
+                                        st.rerun()
+                                
+                                # 如果有示例查询，设置到输入框
+                                if "example_query" in st.session_state:
+                                    search_query = st.session_state.example_query
+                                    del st.session_state.example_query
+                                
+                                if search_clicked and search_query:
+                                    with st.spinner("正在搜索..."):
+                                        try:
+                                            # 需要向量化器
+                                            if "embedder" not in st.session_state:
+                                                from src.embedder import TextEmbedder
+                                                st.session_state.embedder = TextEmbedder()
+                                            
+                                            embedder = st.session_state.embedder
+                                            
+                                            # 执行搜索
+                                            results = vector_store.search_by_text(
+                                                query_text=search_query,
+                                                embedder=embedder,
+                                                n_results=n_results
+                                            )
+                                            
+                                            st.success(f"✅ 找到 {len(results)} 个相关结果")
+                                            
+                                            # 显示结果
+                                            for i, result in enumerate(results):
+                                                with st.expander(f"结果 {i+1} (相似度: {result['score']:.3f})", expanded=i==0):
+                                                    # 显示文本
+                                                    st.markdown("**相关内容:**")
+                                                    st.write(result["text"])
+                                                    
+                                                    # 显示元数据
+                                                    if result["metadata"]:
+                                                        st.markdown("**元数据:**")
+                                                        st.json(result["metadata"])
+                                                    
+                                                    st.divider()
+                                            
+                                            # 保存搜索结果
+                                            st.session_state.last_search_results = results
+                                            st.session_state.last_search_query = search_query
+                                            
+                                        except Exception as e:
+                                            st.error(f"❌ 搜索失败: {str(e)}")
+                                
+                                # 显示历史搜索结果
+                                if "last_search_results" in st.session_state and st.session_state.last_search_results:
+                                    st.info(f"📄 上次搜索: '{st.session_state.last_search_query}'，找到 {len(st.session_state.last_search_results)} 个结果")                     
 
 with tab2:
     st.subheader("批量文件处理")
